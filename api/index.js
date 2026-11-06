@@ -8,7 +8,7 @@ const PRESETS = [ // ubah harga di sini
   { name: 'Minuman', price: 1500 },
   { name: 'Minuman', price: 3000 },
   { name: 'Snack', price: 500 },
-  { name: 'Snack' price: 1000 }
+  { name: 'Snack' price: 1000 },
 ];
 
 // ---- Supabase REST. Akses dikunci lewat header x-app-key (dicek RLS di database) ----
