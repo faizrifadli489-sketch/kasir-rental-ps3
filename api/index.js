@@ -4,10 +4,11 @@ const PIN = process.env.ADMIN_PIN, SECRET = process.env.WEBHOOK_SECRET;
 const STATIC_QRIS = (process.env.QRIS || '').trim();
 const TTL = 15 * 60 * 1000, TZ = 'Asia/Jakarta';
 const PRESETS = [ // ubah harga di sini
-  { name: 'Rental PS3 / jam', price: 5000 },
-  { name: 'Stik tambahan', price: 2000 },
-  { name: 'Minuman', price: 5000 },
-  { name: 'Snack', price: 3000 },
+  { name: 'Rental PS3 / jam', price: 4000 },
+  { name: 'Minuman', price: 1500 },
+  { name: 'Minuman', price: 3000 },
+  { name: 'Snack', price: 500 },
+  { name: 'Snack' price: 1000 }
 ];
 
 // ---- Supabase REST. Akses dikunci lewat header x-app-key (dicek RLS di database) ----
