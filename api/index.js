@@ -1,6 +1,6 @@
 // Kasir Rental PS3, versi Vercel + Supabase (tanpa dependency)
 const crypto = require('crypto');
-const PIN = process.env.ADMIN_PIN, SECRET = process.env.WEBHOOK_SECRET;
+const PIN = '1111', SECRET = "da879976d2d7a4cbf440";
 const STATIC_QRIS = (process.env.QRIS || '').trim();
 const TTL = 15 * 60 * 1000, TZ = 'Asia/Jakarta';
 const PRESETS = [ // ubah harga di sini
