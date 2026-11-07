@@ -3,7 +3,7 @@ const crypto = require('crypto');
 const PIN = '1111', SECRET = "da879976d2d7a4cbf440";
 const STATIC_QRIS = (process.env.QRIS || '').trim();
 const TTL = 15 * 60 * 1000, TZ = 'Asia/Jakarta';
-const PRESETS = [ // ubah harga di sini
+const DEFAULT_PRESETS = [ // dipakai kalau tabel kasir_presets masih kosong
   { name: 'Rental PS3 / jam', price: 4000 },
   { name: 'Minuman', price: 1500 },
   { name: 'Minuman', price: 3000 },
@@ -78,7 +78,32 @@ module.exports = async (req, res) => {
     // Semua endpoint lain wajib PIN
     if (!PIN || req.headers['x-pin'] !== PIN) return send(res, 401, { error: 'PIN salah' });
 
-    if (m === 'GET' && p === '/api/presets') return send(res, 200, PRESETS);
+    if (p === '/api/presets') {
+      // Daftar preset tersimpan di DB; kalau kosong pakai DEFAULT_PRESETS (belum dimigrasi)
+      if (m === 'GET') {
+        const rows = await sb('/kasir_presets?select=name,price,sort&order=sort.asc,name.asc').catch(() => null);
+        return send(res, 200, rows && rows.length ? rows.map(r => ({ name: r.name, price: r.price })) : DEFAULT_PRESETS);
+      }
+      const saveAll = async list => {
+        await sb('/kasir_presets?id=gt.0', { method: 'DELETE', prefer: 'return=minimal' });
+        if (list.length) await sb('/kasir_presets', { method: 'POST', prefer: 'return=minimal', body: list.map((x, i) => ({ name: x.name, price: x.price, sort: i })) });
+        return list;
+      };
+      const clean = arr => (Array.isArray(arr) ? arr : []).map(x => ({ name: String(x.name || '').trim().slice(0, 60), price: Math.round(+x.price) })).filter(x => x.name && x.price > 0);
+      if (m === 'POST') { // tambah satu preset
+        const { j } = await getBody(req);
+        const [item] = clean([j]);
+        if (!item) return send(res, 400, { error: 'Nama dan harga wajib diisi' });
+        const cur = await sb('/kasir_presets?select=name,price,sort');
+        await saveAll([...cur.map(r => ({ name: r.name, price: r.price })), item]);
+        return send(res, 200, { ok: true, presets: [...cur.map(r => ({ name: r.name, price: r.price })), item] });
+      }
+      if (m === 'PUT') { // ganti seluruh daftar (untuk edit/hapus/urut)
+        const { j } = await getBody(req);
+        return send(res, 200, { ok: true, presets: await saveAll(clean(j.presets)) });
+      }
+      return send(res, 405, { error: 'Method tidak didukung' });
+    }
 
     if (m === 'POST' && p === '/api/trx') {
       const { j } = await getBody(req);

@@ -17,3 +17,16 @@ Kalau MacroDroid di HP lain, ganti 127.0.0.1 dengan IP HP server.
 
 Harga default ada di PRESETS di server.js. Data tersimpan di data.json.
 # kasir-rental-ps3
+
+## Tabel Supabase wajib
+Jalankan sekali di SQL editor Supabase (fitur kelola menu & harga):
+
+create table if not exists kasir_presets (
+  id bigint generated always as identity primary key,
+  name text not null,
+  price int not null,
+  sort int not null default 0
+);
+
+Kalau tabel ini belum ada/kosong, daftar menu memakai DEFAULT_PRESETS di api/index.js.
+Setelah diedit dari dashboard, harga di tab Kasir langsung berubah (tanpa deploy).

@@ -58,6 +58,7 @@ input{background:rgba(255,255,255,.07);border:1px solid var(--line);color:var(--
 h2{font-size:15px;font-weight:600;color:var(--mute);margin:18px 0 6px}
 .li{display:flex;justify-content:space-between;gap:12px;padding:10px 0;border-bottom:1px solid var(--line);font-size:15px}
 .li small{display:block;color:var(--mute)}
+.li .ed{background:none;border:1px solid var(--line);color:var(--txt);border-radius:10px;padding:6px 10px;font-size:13px;margin-left:6px}
 .pos{color:var(--ok)}.neg{color:var(--bad)}
 [hidden]{display:none!important}
 </style>
@@ -87,6 +88,10 @@ h2{font-size:15px;font-weight:600;color:var(--mute);margin:18px 0 6px}
       <div class="stat wide"><span>Laba bulan ini</span><b id="m-pf"></b></div>
     </div>
     <h2>7 hari terakhir</h2><div class="chart" id="chart"></div>
+    <h2>Atur menu &amp; harga</h2>
+    <ul id="prl"></ul>
+    <div class="add" style="margin-top:10px"><input id="pn" placeholder="Nama menu"><input id="pp" type="number" inputmode="numeric" placeholder="Rp" style="max-width:110px"><button class="btn alt" id="pbtn" onclick="presetSave()">Tambah</button></div>
+    <p id="pmsg" class="mute" style="margin:8px 0"></p>
     <h2>Catat pengeluaran</h2>
     <div class="add" style="margin-top:0"><input id="en" placeholder="Listrik, stik baru, dll"><input id="ea" type="number" inputmode="numeric" placeholder="Rp" style="max-width:110px"><button class="btn alt" onclick="expense()">Simpan</button></div>
     <ul id="exl"></ul>
@@ -134,7 +139,8 @@ try{pin=sessionStorage.getItem('pin')||''}catch{}
 const api=(u,o={})=>fetch(u,{method:o.method||'GET',headers:{'Content-Type':'application/json','x-pin':pin},body:o.body?JSON.stringify(o.body):undefined}).then(async r=>{const j=await r.json();if(!r.ok)throw j;return j});
 const total=()=>cart.reduce((s,c)=>s+c.price*c.qty,0);
 
-function showPresets(p){$('#presets').innerHTML=p.map(x=>`<button class="chip" onclick='add(${JSON.stringify(x)})'>${esc(x.name)}<small>${rp(x.price)}</small></button>`).join('')}
+let presets=[]; // daftar menu aktif
+function showPresets(p){presets=Array.isArray(p)?p.slice():[];$('#presets').innerHTML=presets.map(x=>`<button class="chip" onclick='add(${JSON.stringify(x)})'>${esc(x.name)}<small>${rp(x.price)}</small></button>`).join('')}
 async function unlock(){
   pin=$('#lpin').value;
   try{showPresets(await api('/api/presets'))}catch{pin='';$('#lerr2').textContent='PIN salah';return}
@@ -202,7 +208,37 @@ async function dash(){
     $('#rec').innerHTML=s.recent.length?s.recent.map(r=>`<li class="li"><div>${esc(r.items)}<small>${t(r.at)} · ${r.method==='cash'?'Cash':'QRIS'}</small></div><b class="pos">${rp(r.amount)}</b></li>`).join(''):'<li class="mute" style="padding:10px 0">Belum ada transaksi.</li>';
     $('#lg').innerHTML=s.logs.length?s.logs.map(l=>`<li class="li"><div>${esc(l.text)}<small>${t(l.at)}</small></div><b class="pos">${rp(l.amount)}</b></li>`).join(''):'<li class="mute" style="padding:10px 0">Belum ada notifikasi masuk.</li>';
     $('#exl').innerHTML=s.expenses.map(e=>`<li class="li"><div>${esc(e.note)}<small>${t(e.at)}</small></div><b class="neg">−${rp(e.amount)}</b></li>`).join('');
+    drawPresets();
   }catch(e){pin='';try{sessionStorage.removeItem('pin')}catch{}$('#login').hidden=false;$('#dsh').hidden=true;$('#lerr').textContent=e.error||'Gagal memuat'}
+}
+async function presetSave(){
+  const name=$('#pn').value.trim(),price=+$('#pp').value;
+  if(!name||!(price>0))return presetMsg('Isi nama dan harga.',true);
+  const edit=$('#pbtn').dataset.i;
+  const list=presets.slice();
+  if(edit!==undefined)list[+edit]={name,price};else list.push({name,price});
+  await presetPut(list);
+}
+function presetEdit(i){$('#pn').value=presets[i].name;$('#pp').value=presets[i].price;$('#pbtn').textContent='Simpan';$('#pbtn').dataset.i=i;$('#pn').focus()}
+function presetReset(){$('#pn').value=$('#pp').value='';$('#pbtn').textContent='Tambah';delete $('#pbtn').dataset.i}
+function presetDel(i){
+  if(!confirm(`Hapus menu "${presets[i].name}"?`))return;
+  presetPut(presets.filter((_,x)=>x!==i));
+}
+function presetMove(i,d){
+  const j=i+d;if(j<0||j>=presets.length)return;
+  const l=presets.slice();[l[i],l[j]]=[l[j],l[i]];presetPut(l);
+}
+function drawPresets(){
+  $('#prl').innerHTML=presets.length?presets.map((p,i)=>`<li class="li"><div>${esc(p.name)}<small>${rp(p.price)}</small></div><div style="display:flex;align-items:center"><button class="ed" onclick="presetMove(${i},-1)" aria-label="Naik" ${i?'':'disabled'}>↑</button><button class="ed" onclick="presetMove(${i},1)" aria-label="Turun" ${i<presets.length-1?'':'disabled'}>↓</button><button class="ed" onclick="presetEdit(${i})">Edit</button><button class="ed" onclick="presetDel(${i})" aria-label="Hapus">✕</button></div></li>`).join(''):'<li class="mute" style="padding:10px 0">Belum ada menu.</li>';
+}
+let presetMsgT=null;
+function presetMsg(m,bad){const e=$('#pmsg');e.textContent=m;e.className=bad?'neg':'pos';clearTimeout(presetMsgT);presetMsgT=setTimeout(()=>{e.textContent=''},2500)}
+async function presetPut(list){
+  try{
+    const r=await api('/api/presets',{method:'PUT',body:{presets:list}});
+    showPresets(r.presets);drawPresets();presetReset();presetMsg('Tersimpan.');
+  }catch(e){presetMsg(e.error||'Gagal menyimpan',true)}
 }
 async function expense(){
   try{await api('/api/expense',{method:'POST',body:{note:$('#en').value,amount:$('#ea').value}});$('#en').value=$('#ea').value='';dash()}
