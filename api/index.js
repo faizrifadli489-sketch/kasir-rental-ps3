@@ -1,6 +1,9 @@
 // Kasir Rental PS3, versi Vercel + Supabase (tanpa dependency)
 const crypto = require('crypto');
-const PIN = '1111', SECRET = "da879976d2d7a4cbf440";
+const PIN = (process.env.PIN || '1111');  // #56: set env PIN di Vercel; fallback 1111
+const SECRET = (process.env.WEBHOOK_SECRET || "da879976d2d7a4cbf440");
+// #58: rate limit PIN salah
+const MAX_FAIL = 5, FAIL_WINDOW = 15 * 60 * 1000, FAIL_BLOCK = 15 * 60 * 1000;
 const STATIC_QRIS = (process.env.QRIS || '').trim();
 const TTL = 15 * 60 * 1000, TZ = 'Asia/Jakarta';
 const DEFAULT_PRESETS = [ // dipakai kalau tabel kasir_presets masih kosong
@@ -57,6 +60,25 @@ const view = t => {
 };
 const SEL = 'select=id,items,amount,method,via,paid_at';
 
+// #56: bandingkan PIN dengan timing-safe (cegah tebak via timing)
+const pinsEqual = (a, b) => {
+  const x = Buffer.from(String(a || '')), y = Buffer.from(String(b || ''));
+  return x.length === y.length && crypto.timingSafeEqual(x, y);
+};
+// #58: ambil jumlah percobaan PIN salah dalam window dari satu klien
+async function failCount(key) {
+  const rows = await sb(`/kasir_authfail?key=eq.${encodeURIComponent(key)}&select=at&order=at.desc&limit=${MAX_FAIL}`);
+  const since = Date.now() - FAIL_WINDOW;
+  return rows.filter(r => r.at > since);
+}
+// #58: cek lockout. ownerLock = PIN benar tapi PIN salah dipakai 5x -> tidak terkunci
+async function lockedOut(key, valid) {
+  const fails = await failCount(key);
+  if (!valid) return { fails };
+  if (fails.length >= MAX_FAIL) return { blockUntil: fails[MAX_FAIL - 1].at + FAIL_BLOCK };
+  return { fails };
+}
+
 module.exports = async (req, res) => {
   const u = new URL(req.url, 'http://x'), p = u.pathname.replace(/\/+$/, ''), m = req.method;
   try {
@@ -75,8 +97,24 @@ module.exports = async (req, res) => {
       return done.length ? send(res, 200, { ok: true, id: t.id, amount }) : send(res, 404, { ok: false, amount });
     }
 
-    // Semua endpoint lain wajib PIN
-    if (!PIN || req.headers['x-pin'] !== PIN) return send(res, 401, { error: 'PIN salah' });
+    // #56/#58: semua endpoint lain wajib PIN, dengan rate limit percobaan
+    // Ambil header PIN dengan nama huruf kecil (Node sudah lowercase, jaga-jaga)
+    const pinHeader = req.headers['x-pin'];
+    const clientKey = String(req.headers['x-forwarded-for'] || '').split(',')[0].trim() || 'local';
+    const valid = !!PIN && pinsEqual(pinHeader, PIN);
+    const { fails, blockUntil } = await lockedOut(clientKey, valid).catch(() => ({ fails: [] }));
+    if (blockUntil && blockUntil > Date.now()) {
+      const mins = Math.ceil((blockUntil - Date.now()) / 60000);
+      return send(res, 429, { error: `Terlalu banyak PIN salah. Coba lagi ${mins} menit.`, retryAfter: blockUntil, locked: true });
+    }
+    if (!valid) {
+      await sb('/kasir_authfail', { method: 'POST', prefer: 'return=minimal', body: { key: clientKey, at: Date.now() } }).catch(() => {});
+      await sb('/kasir_authfail?at=lt.' + (Date.now() - 7 * 864e5), { method: 'DELETE', prefer: 'return=minimal' }).catch(() => {});
+      const left = MAX_FAIL - (fails.length + 1);
+      return send(res, 401, { error: left > 0 ? `PIN salah. Sisa ${left} percobaan.` : 'PIN salah. Terkunci 15 menit.' });
+    }
+    // PIN benar: bersihkan riwayat gagal dari klien ini
+    if (fails.length) await sb(`/kasir_authfail?key=eq.${encodeURIComponent(clientKey)}`, { method: 'DELETE', prefer: 'return=minimal' }).catch(() => {});
 
     if (p === '/api/presets') {
       // Daftar preset tersimpan di DB; kalau kosong pakai DEFAULT_PRESETS (belum dimigrasi)
@@ -90,13 +128,15 @@ module.exports = async (req, res) => {
         return list;
       };
       const clean = arr => (Array.isArray(arr) ? arr : []).map(x => ({ name: String(x.name || '').trim().slice(0, 60), price: Math.round(+x.price) })).filter(x => x.name && x.price > 0);
+      const cur = async () => (await sb('/kasir_presets?select=name,price,sort')) || [];
       if (m === 'POST') { // tambah satu preset
         const { j } = await getBody(req);
         const [item] = clean([j]);
         if (!item) return send(res, 400, { error: 'Nama dan harga wajib diisi' });
-        const cur = await sb('/kasir_presets?select=name,price,sort');
-        await saveAll([...cur.map(r => ({ name: r.name, price: r.price })), item]);
-        return send(res, 200, { ok: true, presets: [...cur.map(r => ({ name: r.name, price: r.price })), item] });
+        const list = (await cur()).map(r => ({ name: r.name, price: r.price }));
+        const res2 = [...list, item];
+        await saveAll(res2);
+        return send(res, 200, { ok: true, presets: res2 });
       }
       if (m === 'PUT') { // ganti seluruh daftar (untuk edit/hapus/urut)
         const { j } = await getBody(req);
@@ -113,8 +153,11 @@ module.exports = async (req, res) => {
       const sub = items.reduce((s, i) => s + i.price * i.qty, 0);
       if (!sub) return send(res, 400, { error: 'Keranjang kosong' });
       const t = { id: crypto.randomBytes(4).toString('hex'), items, subtotal: sub, amount: sub, method: j.method === 'cash' ? 'cash' : 'qris', status: 'pending', created: Date.now() };
-      if (t.method === 'cash') Object.assign(t, { status: 'paid', paid_at: Date.now(), via: 'manual' });
-      else {
+      if (t.method === 'cash') {
+        // #16: uang diterima pelanggan + kembalian; kalau kosong dianggap pas
+        const paid = Math.round(+j.paid) || sub;
+        Object.assign(t, { status: 'paid', paid_at: Date.now(), via: 'manual', paid, change: Math.max(0, paid - sub) });
+      } else {
         // 1 pembayar sekali waktu: QRIS pending sebelumnya dibatalkan
         await sb('/kasir_trx?status=eq.pending&method=eq.qris', { method: 'PATCH', body: { status: 'cancelled' }, prefer: 'return=minimal' });
         Object.assign(t, { qris: dynQris(sub), expires: Date.now() + TTL });

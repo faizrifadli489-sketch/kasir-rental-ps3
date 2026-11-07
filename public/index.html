@@ -103,7 +103,17 @@ h2{font-size:15px;font-weight:600;color:var(--mute);margin:18px 0 6px}
 
 <div class="bar" id="bar"><div>
   <div class="tot"><span>Total</span><b id="total">Rp0</b></div>
-  <div class="row"><button class="btn" id="payq" onclick="pay('qris')">Bayar QRIS</button><button class="btn alt" id="payc" onclick="pay('cash')">Sudah bayar cash</button></div>
+  <div class="row"><button class="btn" id="payq" onclick="pay('qris')">Bayar QRIS</button><button class="btn alt" id="payc" onclick="openCash()">Bayar cash</button></div>
+</div></div>
+
+<div class="ov" id="cash" hidden><div class="card">
+  <div class="mute">Pembayaran cash</div>
+  <div class="amt" id="camt" style="margin:6px 0"></div>
+  <div class="add" style="margin-top:6px"><input id="crecv" type="number" inputmode="numeric" placeholder="Uang diterima" autocomplete="off"></div>
+  <div class="row" style="flex-wrap:wrap;margin-top:8px" id="cquick"></div>
+  <div class="tot" style="margin:14px 0 4px"><span>Kembalian</span><b id="cchg">Rp0</b></div>
+  <p class="mute" id="chint"></p>
+  <div class="row" style="margin-top:12px"><button class="btn alt" onclick="$('#cash').hidden=true">Batal</button><button class="btn" id="cok" onclick="cashGo()">Simpan</button></div>
 </div></div>
 
 <div class="ov" id="sheet" hidden><div class="card">
@@ -143,11 +153,11 @@ let presets=[]; // daftar menu aktif
 function showPresets(p){presets=Array.isArray(p)?p.slice():[];$('#presets').innerHTML=presets.map(x=>`<button class="chip" onclick='add(${JSON.stringify(x)})'>${esc(x.name)}<small>${rp(x.price)}</small></button>`).join('')}
 async function unlock(){
   pin=$('#lpin').value;
-  try{showPresets(await api('/api/presets'))}catch{pin='';$('#lerr2').textContent='PIN salah';return}
+  try{showPresets(await api('/api/presets'))}catch(e){pin='';$('#lerr2').textContent=e.error||'PIN salah';return}
   try{sessionStorage.setItem('pin',pin)}catch{}
   $('#lock').hidden=true;
 }
-if(pin)api('/api/presets').then(p=>{showPresets(p);$('#lock').hidden=true}).catch(()=>{pin=''})
+if(pin)api('/api/presets').then(p=>{showPresets(p);$('#lock').hidden=true}).catch(e=>{pin='';try{sessionStorage.removeItem('pin')}catch{};if(e&&e.error&&/Terkunci|menit/i.test(e.error))$('#lerr2').textContent=e.error})
 function add(x){const f=cart.find(c=>c.name===x.name&&c.price===x.price);f?f.qty++:cart.push({...x,qty:1});draw()}
 function custom(){const n=$('#cn').value.trim(),p=+$('#cp').value;if(!n||!(p>0))return;add({name:n,price:p});$('#cn').value=$('#cp').value=''}
 function qty(i,d){cart[i].qty+=d;if(cart[i].qty<1)cart.splice(i,1);draw()}
@@ -157,10 +167,33 @@ function draw(){
 }
 draw();
 
-async function pay(method){
-  try{const t=await api('/api/trx',{method:'POST',body:{items:cart,method}});cur=t;method==='cash'?done(t):openQ(t)}
+async function pay(method, extra){
+  try{const t=await api('/api/trx',{method:'POST',body:{items:cart,method,...(extra||{})}});cur=t;method==='cash'?done(t):openQ(t)}
   catch(e){alert(e.error||'Gagal membuat transaksi')}
 }
+
+// #16: uang kembalian otomatis + saran pecahan
+let cashRecv=0;
+function openCash(){
+  const total_=total();if(!total_)return;
+  $('#cash').hidden=false;$('#camt').textContent=rp(total_);
+  $('#crecv').value='';cashRecv=0;cashDraw();
+  const opts=[total_,...pecah(total_)].filter((v,i,a)=>v&&a.indexOf(v)===i).slice(0,6);
+  $('#cquick').innerHTML=opts.map(v=>`<button class="btn alt" style="flex:1 1 45%;padding:10px" onclick="setRecv(${v})">${rp(v)}</button>`).join('')+`<button class="btn alt" style="flex:1 1 100%;padding:10px" onclick="setRecv(0)">Uang pas</button>`;
+  setTimeout(()=>$('#crecv').focus(),50);
+}
+// pecahan uang yang wajar di atas total
+function pecah(t){return [5000,10000,20000,50000,100000].map(x=>Math.ceil(t/x)*x).filter(v=>v>t)}
+function setRecv(v){$('#crecv').value=v||'';cashDraw()}
+function cashDraw(){
+  const t=total(),r=Math.round(+$('#crecv').value)||0,chg=r-t;
+  $('#cchg').textContent=rp(Math.max(0,chg));
+  $('#cchg').className=chg<0?'neg':'pos';
+  $('#cok').disabled=chg<0;
+  $('#chint').textContent=r?(chg<0?`Kurang ${rp(-chg)}`:(chg===0?'Uang pas.':'Kembalikan '+rp(chg))):'';
+}
+$('#crecv').addEventListener('input',cashDraw);
+async function cashGo(){const r=Math.round(+$('#crecv').value)||total();$('#cash').hidden=true;await pay('cash',{paid:r})}
 function openQ(t){
   $('#sheet').hidden=false;$('#qamt').textContent=rp(t.amount);
   $('#qnote').textContent='Bayar sesuai nominal persis.';
@@ -183,7 +216,7 @@ async function manual(){if(confirm('Tandai lunas tanpa notifikasi masuk?')){awai
 function done(t){
   close_();cart=[];draw();
   $('#pamt').textContent=rp(t.amount);
-  $('#pvia').textContent=t.method==='cash'?'Cash':t.via==='qris'?'QRIS, terdeteksi otomatis':'QRIS, dikonfirmasi manual';
+  $('#pvia').textContent=(t.method==='cash'?'Cash':t.via==='qris'?'QRIS, terdeteksi otomatis':'QRIS, dikonfirmasi manual')+(t.method==='cash'&&t.change>0?` · kembali ${rp(t.change)}`:'');
   $('#popup').hidden=false;if(navigator.vibrate)navigator.vibrate(200);
 }
 
